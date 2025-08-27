@@ -1,28 +1,26 @@
 import streamlit as st
 import fitz  # PyMuPDF
-import PyPDF2
 import re
 import pandas as pd
 from datetime import datetime
 from openpyxl import load_workbook
-from openpyxl.styles import Alignment, PatternFill
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import PatternFill
 import random
 import io
 
 # -----------------------------
-# خريطة الأدوار والرموز للمشروعين
+# خريطة الأدوار والرموز
 floor_symbol_map = {
     'Basement': 'B',
     'Bs': 'B',
     'Ground Floor': 'GF',
     'Ground Mezanin': 'GM',
     'First Floor': '1',
-    'First Mezanin': '1M',
+    'First Mezzanine Floor': '1M',
     'Second Floor': '2',
-    'Second Mezanin': '2M',
+    'Second Mezzanine Floor': '2M',
     'Third Floor': '3',
-    'Third Mezanin': '3M',
+    'Third Mezzanine Floor': '3M',
     'Fourth Floor': '4',
     'Fifth Floor': '5',
     'Sixth Floor': '6',
@@ -32,19 +30,22 @@ floor_symbol_map = {
     'Rf': 'R',
     'Roof Floor': 'R'
 }
-
 # -----------------------------
-# دالة المشروع الأول
-def extract_project1(pdf_file):
+
+def extract_table_data(pdf_file):
     doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
     rows = []
+
     for page in doc:
         text = page.get_text("text")
+        lines = text.split('\n')
+
         mataf_line = ""
-        for line in text.split('\n'):
+        for line in lines:
             if "Mataf Building Project" in line and "Phase" in line:
                 mataf_line = line
                 break
+
         workorder = re.search(r'WORKORDER\s*#\s*:\s*(\d+)', text)
         floor_match = re.search(r'Mataf Building Project\s*,([^,]+),([^,]+)', mataf_line)
         phase = re.search(r'Phase\s*#\s*(\d+)', mataf_line) if mataf_line else None
@@ -59,7 +60,9 @@ def extract_project1(pdf_file):
             match = re.search(r'([A-Z])$', type_check.group(1))
             if match:
                 last_letter = match.group(1)
+
         floor_name = floor_match.group(2).strip() if floor_match else ""
+
         rows.append({
             "workorder num": workorder.group(1) if workorder else "",
             "Floor": floor_name,
@@ -73,110 +76,63 @@ def extract_project1(pdf_file):
         })
     return rows
 
-# -----------------------------
-# دالة المشروع الثاني
-def extract_project2(pdf_file):
-    data = []
-    reader = PyPDF2.PdfReader(pdf_file)
-    for page in reader.pages:
-        text = page.extract_text()
-        if not text:
-            continue
-        wo_match = re.search(r'WORKORDER\s*#\s*:\s*(\d+)', text)
-        wo_num = wo_match.group(1) if wo_match else ""
-        jp_match = re.search(r'JP Code\s*:\s*(\S+)', text)
-        check_type = jp_match.group(1).strip()[-1] if jp_match else ""
-        qty_match = re.search(r'Asset QTY\s*:\s*(\d+)', text)
-        qty = qty_match.group(1) if qty_match else ""
-        date_match = re.search(r'Scheduel Start\s*:\s*([\w]+\s+\d{1,2},\s+\d{4})', text)
-        formatted_date = ""
-        if date_match:
-            try:
-                date_obj = datetime.strptime(date_match.group(1), '%b %d, %Y')
-                formatted_date = date_obj.strftime('%d-%b-%Y')
-            except:
-                formatted_date = date_match.group(1)
-        zone_floor_match = re.search(r'Zone#(\d+),\s*([^,]+)\s*Asset QTY', text)
-        if zone_floor_match:
-            zone = zone_floor_match.group(1)
-            floor = zone_floor_match.group(2).strip()
-        else:
-            floor = ""
-            zone = ""
-        if all([wo_num, zone, floor, qty, check_type, formatted_date]):
-            data.append({
-                'Work Order': wo_num,
-                'Zone': zone,
-                'Floor': floor,
-                'Quantity': qty,
-                'Equipment': 'FHC&PIPE',
-                'Type of Check': check_type,
-                'Date': formatted_date
-            })
-    return data
-
-# -----------------------------
-# دالة تنسيق Excel مشتركة
-def style_excel(filename):
-    wb = load_workbook(filename)
+def apply_colors_to_excel(excel_filename):
+    wb = load_workbook(excel_filename)
     ws = wb.active
-    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-        for cell in row:
-            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-    for col in range(1, ws.max_column + 1):
-        max_length = max(len(str(cell.value)) for cell in ws[get_column_letter(col)] if cell.value) + 5
-        ws.column_dimensions[get_column_letter(col)].width = max_length
-    # تلوين حسب التاريخ
-    dates = {}
-    fill_colors = [
-        "FFC7CE", "C6EFCE", "FFEB9C", "9CC3E6", "F4CCCC", "D9EAD3",
-        "FFE699", "D0E0E3", "FCE5CD", "D9D2E9"
-    ]
-    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-        date_cell = row[6]
-        date_value = date_cell.value
-        if date_value not in dates:
-            dates[date_value] = random.choice(fill_colors)
-        fill_color = dates[date_value]
-        for cell in row:
-            cell.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
-    wb.save(filename)
 
-# -----------------------------
-# واجهة Streamlit
-st.title("PDF to Excel - Multi Projects")
-st.write("اختر المشروع ورفع الملفات:")
+    date_col = 9  # عمود التاريخ
+    max_row = ws.max_row
 
-project_choice = st.radio("اختر المشروع:", ("مشروع 1", "مشروع 2"))
+    dates = [ws.cell(row=row, column=date_col).value for row in range(2, max_row + 1)]
+    filtered_dates = [d for d in dates if d]
+    unique_dates = list(sorted(set(filtered_dates)))
+    color_map = {}
 
-uploaded_file = None
-if project_choice == "مشروع 1":
-    uploaded_file = st.file_uploader("اختر ملف PDF للمشروع 1", type=["pdf"])
-elif project_choice == "مشروع 2":
-    uploaded_file = st.file_uploader("اختر ملف PDF للمشروع 2", type=["pdf"])
+    def light_random_color():
+        r = random.randint(180, 255)
+        g = random.randint(180, 255)
+        b = random.randint(180, 255)
+        return f"{r:02X}{g:02X}{b:02X}"
+
+    for d in unique_dates:
+        color_map[d] = light_random_color()
+
+    for row in range(2, max_row + 1):
+        cell_date = ws.cell(row=row, column=date_col).value
+        fill_color = color_map.get(cell_date, "FFFFFF") if cell_date else "FFFFFF"
+        fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+        for col in range(1, ws.max_column + 1):
+            ws.cell(row=row, column=col).fill = fill
+
+    wb.save(excel_filename)
+
+# ======================
+# Streamlit Interface
+st.title("PDF to Excel Converter - Workorders")
+st.write("قم برفع ملف PDF ليتم استخراج البيانات وتحويلها إلى Excel")
+
+uploaded_file = st.file_uploader("اختر ملف PDF", type=["pdf"])
 
 if uploaded_file:
-    if project_choice == "مشروع 1":
-        data = extract_project1(uploaded_file)
-        df_columns = ["workorder num", "Floor", "phase", "Column", "Axis", "Quantity", "Equipment", "Type of check", "Date"]
-    else:
-        data = extract_project2(uploaded_file)
-        df_columns = ['Work Order', 'Zone', 'Floor', 'Quantity', 'Equipment', 'Type of Check', 'Date']
-
+    data = extract_table_data(uploaded_file)
     if data:
-        df = pd.DataFrame(data, columns=df_columns)
+        df = pd.DataFrame(data)
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.date
-        df = df.sort_values('Date').reset_index(drop=True)
+        df = df.sort_values(by='Date').reset_index(drop=True)
         df['Floor'] = df['Floor'].str.strip().str.title()
         df['Floor'] = df['Floor'].map(floor_symbol_map).fillna(df['Floor'])
-
-        excel_filename = "Extracted_Workorders.xlsx"
+        
+        excel_filename = "extracted_workorders_colored.xlsx"
         df.to_excel(excel_filename, index=False)
-        style_excel(excel_filename)
+        apply_colors_to_excel(excel_filename)
 
         with open(excel_filename, "rb") as f:
-            st.download_button("⬇️ تحميل ملف Excel", f, file_name=excel_filename,
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.download_button(
+                label="⬇️ تحميل ملف Excel",
+                data=f,
+                file_name=excel_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         st.success("✅ تم استخراج البيانات بنجاح!")
     else:
         st.warning("❌ لم يتم العثور على بيانات صالحة في الملف.")
