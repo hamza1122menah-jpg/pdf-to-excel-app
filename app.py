@@ -49,11 +49,17 @@ if uploaded_files:
             qty_match = re.search(r'Asset QTY\s*:\s*(\d+)', text)
             date_match = re.search(r'Scheduel Start\s*:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})', text)
             loc_match = re.search(r'Location Code\s*:\s*(\S+)', text)
+            phase_match = re.search(r'Phase\s*#\s*(\d+)', text)
+            column_match = re.search(r'Column\s*([A-Z0-9]+)', text)
+            axis_match = re.search(r'Axis\s*([A-Z0-9]+)', text)
 
             wo_num = wo_match.group(1) if wo_match else ""
             type_check = jp_match.group(1).strip()[-1] if jp_match else ""
             qty = qty_match.group(1) if qty_match else ""
             date_str = date_match.group(1) if date_match else ""
+            phase = phase_match.group(1) if phase_match else ""
+            column = column_match.group(1) if column_match else ""
+            axis = axis_match.group(1) if axis_match else ""
 
             if date_str:
                 try:
@@ -70,15 +76,18 @@ if uploaded_files:
                 loc_code = loc_match.group(1)
                 floor_code = loc_code[10:12].upper() if len(loc_code) > 10 else ""
                 floor = floor_symbol_map.get(floor_code, floor_code)
-            
+
             # Append row if data exists
             if all([wo_num, qty]):
                 all_rows.append({
-                    "Work Order": wo_num,
+                    "workorder num": wo_num,
                     "Floor": floor,
+                    "phase": phase,
+                    "Column": column,
+                    "Axis": axis,
                     "Quantity": qty,
                     "Equipment": "FHC",
-                    "Type of Check": type_check,
+                    "Type of check": type_check,
                     "Date": formatted_date
                 })
 
