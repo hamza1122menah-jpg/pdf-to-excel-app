@@ -1,15 +1,12 @@
-import streamlit as st
 import fitz  # PyMuPDF
-import pandas as pd
 import re
+import pandas as pd
 from datetime import datetime
-import io
-import random
 from openpyxl import Workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import Alignment
+import os
 
-# -----------------------
-# خريطة الأدوار → رموز
+# خريطة الأدوار والرموز
 floor_symbol_map = {
     'Basement': 'B',
     'Ground Floor': 'GF',
@@ -28,116 +25,88 @@ floor_symbol_map = {
     'Ninth Floor': '9',
 }
 
-# -----------------------
-st.title("📄 PDF to Excel Converter")
+# إنشاء نمط Regex لجميع الأدوار
+floor_pattern = re.compile("|".join(re.escape(floor) for floor in floor_symbol_map.keys()), re.IGNORECASE)
 
-uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
+def extract_pdf_data(pdf_path):
+    doc = fitz.open(pdf_path)
+    data = []
 
-if uploaded_files:
-    all_rows = []
+    for page in doc:
+        text = page.get_text("text")
+        if not text:
+            continue
 
-    for uploaded_file in uploaded_files:
-        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        for page in doc:
-            text = page.get_text("text")
-            if not text:
-                continue
+        # البحث عن Workorder
+        wo_match = re.search(r'WORKORDER\s*#\s*:\s*(\d+)', text)
+        wo_num = wo_match.group(1) if wo_match else ""
 
-            # استخراج البيانات
-            wo_match = re.search(r'WORKORDER\s*#\s*:\s*(\d+)', text)
-            jp_match = re.search(r'JP Code\s*:\s*(\S+)', text)
-            qty_match = re.search(r'Asset QTY\s*:\s*(\d+)', text)
-            date_match = re.search(r'Scheduel Start\s*:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})', text)
-            loc_match = re.search(r'Location Code\s*:\s*(\S+)', text)
-            phase_match = re.search(r'Phase\s*#\s*(\d+)', text)
-            column_match = re.search(r'Column\s*([A-Z0-9]+)', text)
-            axis_match = re.search(r'Axis\s*([A-Z0-9]+)', text)
+        # البحث عن JP Code لاستخراج Type of check
+        jp_match = re.search(r'JP Code\s*:\s*(\S+)', text)
+        check_type = jp_match.group(1).strip()[-1] if jp_match else ""
 
-            wo_num = wo_match.group(1) if wo_match else ""
-            type_check = jp_match.group(1).strip()[-1] if jp_match else ""
-            qty = qty_match.group(1) if qty_match else ""
-            date_str = date_match.group(1) if date_match else ""
-            phase = phase_match.group(1) if phase_match else ""
-            column = column_match.group(1) if column_match else ""
-            axis = axis_match.group(1) if axis_match else ""
+        # البحث عن Quantity
+        qty_match = re.search(r'Asset QTY\s*:\s*(\d+)', text)
+        qty = qty_match.group(1) if qty_match else ""
 
-            if date_str:
-                try:
-                    date_obj = datetime.strptime(date_str, "%b %d, %Y")
-                    formatted_date = date_obj.strftime("%d-%b-%Y")
-                except:
-                    formatted_date = date_str
-            else:
-                formatted_date = ""
+        # البحث عن Date
+        date_match = re.search(r'Scheduel Start\s*:\s*([\w]+\s+\d{1,2},\s+\d{4})', text)
+        if date_match:
+            try:
+                date_obj = datetime.strptime(date_match.group(1), '%b %d, %Y')
+                formatted_date = date_obj.strftime('%d-%b-%Y')
+            except:
+                formatted_date = date_match.group(1)
+        else:
+            formatted_date = ""
 
-            # Floor extraction and mapping
-            floor = ""
-            if loc_match:
-                loc_code = loc_match.group(1)
-                floor_code = loc_code[10:12].upper() if len(loc_code) > 10 else ""
-                floor = floor_symbol_map.get(floor_code, floor_code)
+        # البحث عن Phase, Column, Axis
+        phase_match = re.search(r'Phase\s*#\s*(\d+)', text)
+        column_match = re.search(r'Column\s*([A-Z0-9]+)', text)
+        axis_match = re.search(r'Axis\s*([A-Z0-9]+)', text)
 
-            # Append row if data exists
-            if all([wo_num, qty]):
-                all_rows.append({
-                    "workorder num": wo_num,
-                    "Floor": floor,
-                    "phase": phase,
-                    "Column": column,
-                    "Axis": axis,
-                    "Quantity": qty,
-                    "Equipment": "FHC",
-                    "Type of check": type_check,
-                    "Date": formatted_date
-                })
+        # البحث عن Floor باستخدام Regex قوي
+        floor_match = floor_pattern.search(text)
+        floor_code = floor_symbol_map[floor_match.group()] if floor_match else ""
 
-    if all_rows:
-        df = pd.DataFrame(all_rows)
-        # ترتيب حسب التاريخ
-        df['Date'] = pd.to_datetime(df['Date'], format='%d-%b-%Y', errors='coerce')
-        df = df.sort_values('Date')
-        df['Date'] = df['Date'].dt.strftime('%d-%b-%Y')
+        if any([wo_num, floor_code, qty, check_type]):
+            data.append({
+                "Workorder num": wo_num,
+                "Floor": floor_code,
+                "Phase": phase_match.group(1) if phase_match else "",
+                "Column": column_match.group(1) if column_match else "",
+                "Axis": axis_match.group(1) if axis_match else "",
+                "Quantity": qty,
+                "Equipment": "FHC",
+                "Type of check": check_type,
+                "Date": formatted_date
+            })
 
-        # -----------------------
-        # إنشاء ملف Excel في الذاكرة
-        output = io.BytesIO()
-        df.to_excel(output, index=False)
-        excel_bytes = output.getvalue()
+    return data
 
-        # -----------------------
-        # تلوين الصفوف بألوان فاتحة مختلفة لكل تاريخ
-        wb = Workbook()
-        ws = wb.active
-        ws.append(list(df.columns))
+def save_to_excel(data, output_file="output.xlsx"):
+    df = pd.DataFrame(data)
+    # ترتيب حسب التاريخ
+    df['Date'] = pd.to_datetime(df['Date'], format='%d-%b-%Y', errors='coerce')
+    df = df.sort_values('Date')
+    df['Date'] = df['Date'].dt.strftime('%d-%b-%Y')
 
-        # ألوان فاتحة
-        light_colors = ["FFFFCC", "CCFFCC", "CCE5FF", "FFCCCC", "FFE5CC", "E5CCFF", "FFFF99"]
-        date_colors = {}
+    df.to_excel(output_file, index=False)
 
-        for idx, row in df.iterrows():
-            row_values = list(row)
-            ws.append(row_values)
-            date_val = row['Date']
-            if date_val not in date_colors:
-                date_colors[date_val] = random.choice(light_colors)
-            fill = PatternFill(start_color=date_colors[date_val], end_color=date_colors[date_val], fill_type="solid")
-            for col_idx in range(1, len(row_values)+1):
-                ws.cell(row=ws.max_row, column=col_idx).fill = fill
+    # تنسيق الخلايا في Excel
+    from openpyxl import load_workbook
+    wb = load_workbook(output_file)
+    ws = wb.active
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+        for cell in row:
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    wb.save(output_file)
+    print(f"✅ تم حفظ الملف: {output_file}")
 
-        # حفظ الملف في الذاكرة
-        output_excel = io.BytesIO()
-        wb.save(output_excel)
-        excel_data = output_excel.getvalue()
-
-        # -----------------------
-        # زر تحميل Excel
-        st.download_button(
-            label="⬇️ Download Excel",
-            data=excel_data,
-            file_name="output.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        st.success("✅ Excel file is ready to download!")
-
-    else:
-        st.warning("❌ No valid data found in the uploaded PDFs.")
+# ========== التشغيل ==========
+pdf_file = input("ضع مسار ملف PDF هنا: ")
+data = extract_pdf_data(pdf_file)
+if data:
+    save_to_excel(data)
+else:
+    print("❌ لم يتم العثور على بيانات صالحة في الملف.")
