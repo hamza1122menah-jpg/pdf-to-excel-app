@@ -3,135 +3,132 @@ import fitz  # PyMuPDF
 import pandas as pd
 import re
 from datetime import datetime
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill, Border, Side
+import io
 import random
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill
 
-# ================= دوال استخراج البيانات =================
-def extract_table_data(pdf_file):
-    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-    total_pages = len(doc)
-    rows = []
+# -----------------------
+# خريطة الأدوار → رموز
+floor_symbol_map = {
+    'Basement': 'B',
+    'Ground Floor': 'GF',
+    'Ground Mezanin': 'GM',
+    'First Floor': '1',
+    'First Mezzanine Floor': '1M',
+    'Second Floor': '2',
+    'Second Mezzanine Floor': '2M',
+    'Third Floor': '3',
+    'Third Mezzanine Floor': '3M',
+    'Fourth Floor': '4',
+    'Fifth Floor': '5',
+    'Sixth Floor': '6',
+    'Seventh Floor': '7',
+    'Eighth Floor': '8',
+    'Ninth Floor': '9',
+}
 
-    for page_num in range(total_pages):
-        page = doc[page_num]
-        text = page.get_text("text")
-        lines = text.split('\n')
+# -----------------------
+st.title("📄 PDF to Excel Converter")
 
-        workorder = re.search(r'WORKORDER\s*#\s*:\s*(\d+)', text)
-        floor_name = None
-        floor_match = re.search(r'Mataf Building Project\s*,([^,]+),([^,]+)', text)
-        if floor_match:
-            floor_name = floor_match.group(2).strip()
+uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
 
-        phase = re.search(r'Phase\s*#\s*(\d+)', text)
-        column = re.search(r'Column\s*([A-Z0-9]+)', text)
-        axis = re.search(r'Axis\s*([A-Z0-9]+)', text)
-        qty = re.search(r'Asset QTY\s*:\s*(\d+)', text)
-        type_check = re.search(r'JP Code\s*:\s*([A-Z0-9\-]+)', text)
-        date = re.search(r'Scheduel Start\s*:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})', text)
+if uploaded_files:
+    all_rows = []
 
-        last_letter = ""
-        if type_check:
-            match = re.search(r'([A-Z])$', type_check.group(1))
-            if match:
-                last_letter = match.group(1)
+    for uploaded_file in uploaded_files:
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        for page in doc:
+            text = page.get_text("text")
+            if not text:
+                continue
 
-        rows.append({
-            "Workorder": workorder.group(1) if workorder else "",
-            "Floor": floor_name if floor_name else "",
-            "Phase": phase.group(1) if phase else "",
-            "Column": column.group(1) if column else "",
-            "Axis": axis.group(1) if axis else "",
-            "Quantity": qty.group(1) if qty else "",
-            "Equipment": "FHC",
-            "Type of Check": last_letter,
-            "Date": date.group(1) if date else ""
-        })
+            # استخراج البيانات
+            wo_match = re.search(r'WORKORDER\s*#\s*:\s*(\d+)', text)
+            jp_match = re.search(r'JP Code\s*:\s*(\S+)', text)
+            qty_match = re.search(r'Asset QTY\s*:\s*(\d+)', text)
+            date_match = re.search(r'Scheduel Start\s*:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})', text)
+            loc_match = re.search(r'Location Code\s*:\s*(\S+)', text)
 
-    return rows
+            wo_num = wo_match.group(1) if wo_match else ""
+            type_check = jp_match.group(1).strip()[-1] if jp_match else ""
+            qty = qty_match.group(1) if qty_match else ""
+            date_str = date_match.group(1) if date_match else ""
 
-# ================= دالة ألوان وحدود Excel =================
-def apply_colors_and_borders(excel_filename):
-    wb = load_workbook(excel_filename)
-    ws = wb.active
+            if date_str:
+                try:
+                    date_obj = datetime.strptime(date_str, "%b %d, %Y")
+                    formatted_date = date_obj.strftime("%d-%b-%Y")
+                except:
+                    formatted_date = date_str
+            else:
+                formatted_date = ""
 
-    date_col = 9  # عمود التاريخ
-    max_row = ws.max_row
-    dates = [ws.cell(row=r, column=date_col).value for r in range(2, max_row + 1)]
-    unique_dates = list(sorted(set([d for d in dates if d is not None])))
+            # Floor extraction and mapping
+            floor = ""
+            if loc_match:
+                loc_code = loc_match.group(1)
+                floor_code = loc_code[10:12].upper() if len(loc_code) > 10 else ""
+                floor = floor_symbol_map.get(floor_code, floor_code)
+            
+            # Append row if data exists
+            if all([wo_num, qty]):
+                all_rows.append({
+                    "Work Order": wo_num,
+                    "Floor": floor,
+                    "Quantity": qty,
+                    "Equipment": "FHC",
+                    "Type of Check": type_check,
+                    "Date": formatted_date
+                })
 
-    def light_color():
-        r = random.randint(180, 255)
-        g = random.randint(180, 255)
-        b = random.randint(180, 255)
-        return f"{r:02X}{g:02X}{b:02X}"
+    if all_rows:
+        df = pd.DataFrame(all_rows)
+        # ترتيب حسب التاريخ
+        df['Date'] = pd.to_datetime(df['Date'], format='%d-%b-%Y', errors='coerce')
+        df = df.sort_values('Date')
+        df['Date'] = df['Date'].dt.strftime('%d-%b-%Y')
 
-    color_map = {d: light_color() for d in unique_dates}
+        # -----------------------
+        # إنشاء ملف Excel في الذاكرة
+        output = io.BytesIO()
+        df.to_excel(output, index=False)
+        excel_bytes = output.getvalue()
 
-    border_style = Side(border_style="thin", color="000000")
-    border = Border(left=border_style, right=border_style, top=border_style, bottom=border_style)
+        # -----------------------
+        # تلوين الصفوف بألوان فاتحة مختلفة لكل تاريخ
+        wb = Workbook()
+        ws = wb.active
+        ws.append(list(df.columns))
 
-    for r in range(2, max_row + 1):
-        cell_date = ws.cell(row=r, column=date_col).value
-        fill_color = color_map.get(cell_date, "FFFFFF") if cell_date else "FFFFFF"
-        fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
-        for c in range(1, ws.max_column + 1):
-            cell = ws.cell(row=r, column=c)
-            cell.fill = fill
-            cell.border = border
+        # ألوان فاتحة
+        light_colors = ["FFFFCC", "CCFFCC", "CCE5FF", "FFCCCC", "FFE5CC", "E5CCFF", "FFFF99"]
+        date_colors = {}
 
-    wb.save(excel_filename)
+        for idx, row in df.iterrows():
+            row_values = list(row)
+            ws.append(row_values)
+            date_val = row['Date']
+            if date_val not in date_colors:
+                date_colors[date_val] = random.choice(light_colors)
+            fill = PatternFill(start_color=date_colors[date_val], end_color=date_colors[date_val], fill_type="solid")
+            for col_idx in range(1, len(row_values)+1):
+                ws.cell(row=ws.max_row, column=col_idx).fill = fill
 
-# ================= دالة Streamlit =================
-def main():
-    st.title("PDF to Excel Converter")
-    st.write("رفع ملفات PDF ومعالجتها مباشرة وتنزيل Excel")
+        # حفظ الملف في الذاكرة
+        output_excel = io.BytesIO()
+        wb.save(output_excel)
+        excel_data = output_excel.getvalue()
 
-    uploaded_file = st.file_uploader("اختر ملف PDF", type="pdf")
-    if uploaded_file:
-        data = extract_table_data(uploaded_file)
-        if not data:
-            st.warning("لم يتم العثور على بيانات صالحة في هذا الملف.")
-            return
+        # -----------------------
+        # زر تحميل Excel
+        st.download_button(
+            label="⬇️ Download Excel",
+            data=excel_data,
+            file_name="output.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        st.success("✅ Excel file is ready to download!")
 
-        df = pd.DataFrame(data)
-
-        df['Floor'] = df['Floor'].str.strip().str.title()
-        floor_symbol_map = {
-            'Basement': 'B',
-            'Bs': 'B',
-            'Ground Floor': 'GF',
-            'Ground Mezanin': 'GM',
-            'First Floor': '1',
-            'First Mezzanine Floor': '1M',
-            'Second Mezzanine Floor': '2M',
-            'Third Mezzanine Floor': '3M',
-            'First Mezanin': '1M',
-            'Second Floor': '2',
-            'Second Mezanin': '2M',
-            'Third Floor': '3',
-            'Third Mezanin': '3M',
-            'Fourth Floor': '4',
-            'Fifth Floor': '5',
-            'Sixth Floor': '6',
-            'Seventh Floor': '7',
-            'Eighth Floor': '8',
-            'Ninth Floor': '9',
-            'Rf': 'R',
-            'Roof Floor': 'R'
-        }
-        df['Floor'] = df['Floor'].map(floor_symbol_map).fillna(df['Floor'])
-
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.date
-        df = df.sort_values(by='Date').reset_index(drop=True)
-
-        output_file = "output.xlsx"
-        df.to_excel(output_file, index=False)
-        apply_colors_and_borders(output_file)
-
-        st.success("تم إنشاء ملف Excel!")
-        st.download_button("تحميل الملف", output_file)
-
-if __name__ == "__main__":
-    main()
+    else:
+        st.warning("❌ No valid data found in the uploaded PDFs.")
